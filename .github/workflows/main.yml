@@ -4,10 +4,10 @@ name: 全自动交叉编译并发布 Pasbox
 on:
   push:
     tags:
-      - 'v*'  # 标签以v开头时触发（如v1.0.0）
+      - 'v*' # 标签以v开头时触发（如v1.0.0）
   pull_request:
     branches: [ master, main ]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch: # 手动触发
 
 # 全局环境变量（自动匹配仓库路径，无需手动修改）
 env:
@@ -25,195 +25,121 @@ jobs:
     name: ${{ matrix.os }}-${{ matrix.arch }} 编译
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false  # 一个平台失败不影响其他平台
+      fail-fast: false # 一个平台失败不影响其他平台
       matrix:
         # 支持的编译平台和架构
         os: [ubuntu-latest, windows-latest, macos-latest]
         arch: [x86_64, i386]
         exclude:
           - os: macos-latest
-            arch: i386  # macOS 不再支持32位
+            arch: i386 # macOS 不再支持32位
         include:
           - os: ubuntu-latest
-            fpc_arch: x86_64-linux
-            output_suffix: linux-${{ matrix.arch }}
-          - os: windows-latest
-            fpc_arch: x86_64-win64
-            output_suffix: windows-${{ matrix.arch }}.exe
-          - os: macos-latest
-            fpc_arch: x86_64-darwin
-            output_suffix: macos-${{ matrix.arch }}
+            arch: arm64
+          - os: ubuntu-latest
+            arch: arm32
 
     steps:
-      # 步骤1：拉取代码（自动匹配仓库路径）
-      - name: 拉取仓库代码
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整历史，避免编译时缺失版本信息
-          path: ./pasbox
-        id: checkout
-        continue-on-error: false
-        timeout-minutes: 5
+          submodules: recursive
 
-      # 步骤2：错误处理 - 检查代码拉取结果
-      - name: 校验代码拉取状态
-        if: steps.checkout.outcome != 'success'
-        run: |
-          echo "❌ 错误：拉取仓库代码失败！仓库路径：${{ env.REPO_NAME }}"
-          echo "🔍 排查建议：检查仓库地址是否正确，网络是否通畅"
-          exit 1
-
-      # 步骤3：安装编译环境（Lazarus/FPC）
-      - name: 安装 FPC/Lazarus 编译环境
-        uses: joonro/setup-lazarus@v3.0.0
+      - name: 安装 Free Pascal (FPC ) 和 Lazarus
+        uses: gcarreno/setup-lazarus@v3.2.17
         with:
-          lazarus-version: 'latest'  # 使用最新稳定版
-          fpc-version: 'latest'
-        id: install_compiler
-        continue-on-error: true
+          lazarus-version: stable
+          fpc-version: stable
 
-      # 步骤4：降级安装（主版本失败时）
-      - name: 降级安装 FPC/Lazarus（备用版本）
-        if: steps.install_compiler.outcome != 'success'
-        uses: joonro/setup-lazarus@v3.0.0
-        with:
-          lazarus-version: '2.2.6'
-          fpc-version: '3.2.2'
-        id: install_compiler_fallback
-        continue-on-error: false
-
-      # 步骤5：自动下载依赖库（主地址失败则切换备用）
-      - name: 下载依赖库（主地址）
+      - name: 安装系统依赖 (Linux)
+        if: runner.os == 'Linux'
         run: |
-          echo "📥 尝试从主地址下载依赖：${{ env.DEPENDENCY_MAIN }}"
-          git clone ${{ env.DEPENDENCY_MAIN }} ${{ env.WORKSPACE }}/pasbox/deps
-        id: deps_main
-        continue-on-error: true
+          echo "正在更新 apt 缓存并安装系统依赖..."
+          sudo apt-get update -y || { echo "apt update 失败"; exit 1; }
+          sudo apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev || { echo "安装 Linux 系统依赖失败"; exit 1; }
+          echo "Linux 系统依赖安装完成。"
 
-      - name: 切换备用地址1下载依赖
-        if: steps.deps_main.outcome != 'success'
+      - name: 自动获取依赖库 (带容错机制)
         run: |
-          echo "⚠️ 主地址失败，切换到备用地址1：${{ env.DEPENDENCY_BACKUP1 }}"
-          git clone ${{ env.DEPENDENCY_BACKUP1 }} ${{ env.WORKSPACE }}/pasbox/deps
-        id: deps_backup1
-        continue-on-error: true
-
-      - name: 切换备用地址2下载依赖
-        if: steps.deps_backup1.outcome != 'success'
-        run: |
-          echo "⚠️ 备用地址1失败，切换到备用地址2：${{ env.DEPENDENCY_BACKUP2 }}"
-          git clone ${{ env.DEPENDENCY_BACKUP2 }} ${{ env.WORKSPACE }}/pasbox/deps
-        id: deps_backup2
-        continue-on-error: false
-
-      # 步骤6：依赖下载错误处理
-      - name: 校验依赖下载状态
-        if: steps.deps_backup2.outcome != 'success'
-        run: |
-          echo "❌ 错误：所有依赖库地址均无法访问！"
-          echo "📋 尝试过的地址："
-          echo "  1. ${{ env.DEPENDENCY_MAIN }}"
-          echo "  2. ${{ env.DEPENDENCY_BACKUP1 }}"
-          echo "  3. ${{ env.DEPENDENCY_BACKUP2 }}"
-          echo "🔍 排查建议：检查依赖库地址是否有效，或新增备用地址"
-          exit 1
-
-      # 步骤7：配置交叉编译环境（Linux/macOS 额外处理）
-      - name: 配置 Linux 交叉编译依赖
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt update
-          sudo apt install -y libgtk2.0-dev libqt5pas-dev binutils-mingw-w64 gcc-mingw-w64
-          # 修复32位编译依赖
-          if [ "${{ matrix.arch }}" = "i386" ]; then
-            sudo apt install -y gcc-multilib g++-multilib lib32z1-dev
-          fi
-        timeout-minutes: 10
-
-      - name: 配置 macOS 交叉编译依赖
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install gtk+2 qt5
-          brew link --force qt5
-        timeout-minutes: 10
-
-      # 步骤8：编译项目（核心步骤，带详细错误输出）
-      - name: 编译 Pasbox 项目
-        working-directory: ${{ env.WORKSPACE }}/pasbox
-        run: |
-          echo "🚀 开始编译：${{ matrix.os }}-${{ matrix.arch }}"
-          echo "📂 工作目录：$(pwd)"
-          # 编译命令（Lazarus 命令行编译）
-          lazbuild --verbose --cpu=${{ matrix.arch }} --os=${{ matrix.fpc_arch }} pasbox.lpi
-          # 检查编译产物是否存在
-          if [ -f "pasbox${{ matrix.output_suffix }}" ]; then
-            echo "✅ 编译成功！产物路径：$(pwd)/pasbox${{ matrix.output_suffix }}"
-            # 重命名产物（带版本信息）
-            mv pasbox${{ matrix.output_suffix }} pasbox-${{ github.ref_name }}-${{ matrix.output_suffix }}
+          echo "正在尝试从主地址获取依赖..."
+          if git clone $DEPENDENCY_MAIN deps; then
+            echo "成功从主地址获取依赖。"
+          elif git clone $DEPENDENCY_BACKUP1 deps; then
+            echo "主地址失败，成功从备用地址1获取依赖。"
+          elif git clone $DEPENDENCY_BACKUP2 deps; then
+            echo "备用地址1失败，成功从备用地址2获取依赖。"
           else
-            echo "❌ 编译失败！未生成目标文件"
-            echo "📋 编译日志："
-            cat lazbuild.log || echo "无编译日志"
-            exit 1
+            echo "所有地址均失败，请检查网络或仓库地址！" && exit 1
           fi
-        timeout-minutes: 15
-        env:
-          # 强制输出详细错误
-          FPC_DEBUG: 1
-          LAZARUS_DEBUG: 1
+          # 将依赖库路径添加到 FPC 搜索路径
+          echo "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" >> $GITHUB_ENV
+          echo "依赖库获取完成。"
 
-      # 步骤9：上传编译产物（作为临时工件）
-      - name: 上传编译产物
+      - name: 编译 Pasbox 守护进程 (根据平台和架构)
+        run: |
+          echo "正在编译 Pasbox 守护进程..."
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_daemon.lpi || { echo "Windows 守护进程编译失败"; exit 1; }
+          else
+            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_daemon.lpi || { echo "非 Windows 守护进程编译失败"; exit 1; }
+          fi
+          echo "Pasbox 守护进程编译完成。"
+
+      - name: 编译 Pasbox 经典钱包 (根据平台和架构)
+        run: |
+          echo "正在编译 Pasbox 经典钱包..."
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_wallet_classic.lpi || { echo "Windows 经典钱包编译失败"; exit 1; }
+          else
+            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_wallet_classic.lpi || { echo "非 Windows 经典钱包编译失败"; exit 1; }
+          fi
+          echo "Pasbox 经典钱包编译完成。"
+
+      - name: 打包二进制文件
+        run: |
+          echo "正在打包二进制文件..."
+          mkdir -p release
+          # 复制编译产物到 release 目录
+          # 注意：实际的二进制文件名可能因平台和FPC版本而异，这里使用通配符
+          find src -maxdepth 1 -type f -name "pascalcoin_daemon*" -exec cp {} release/ \; || { echo "复制守护进程失败"; exit 1; }
+          find src -maxdepth 1 -type f -name "pascalcoin_wallet_classic*" -exec cp {} release/ \; || { echo "复制经典钱包失败"; exit 1; }
+
+          cd release
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            zip -r ../pasbox-${{ matrix.os }}-${{ matrix.arch }}.zip . || { echo "Windows 打包失败"; exit 1; }
+          else
+            tar -czvf ../pasbox-${{ matrix.os }}-${{ matrix.arch }}.tar.gz . || { echo "非 Windows 打包失败"; exit 1; }
+          fi
+          echo "二进制文件打包完成。"
+
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: pasbox-${{ github.ref_name }}-${{ matrix.output_suffix }}
-          path: ${{ env.WORKSPACE }}/pasbox/pasbox-${{ github.ref_name }}-${{ matrix.output_suffix }}
-          retention-days: 7  # 临时工件保留7天
+          name: pasbox-${{ matrix.os }}-${{ matrix.arch }}
+          path: pasbox-${{ matrix.os }}-${{ matrix.arch }}.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 发布步骤：仅在打标签时执行，合并所有平台产物
+  # 发布作业：仅在打标签时运行
   release:
-    needs: build  # 依赖build任务完成
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    name: 发布到 GitHub Release
     steps:
-      # 步骤1：下载所有平台的编译产物
-      - name: 下载所有编译产物
+      - name: 下载所有产物
         uses: actions/download-artifact@v4
         with:
-          path: ${{ github.workspace }}/release
+          path: artifacts
 
-      # 步骤2：创建GitHub Release并上传产物
-      - name: 创建并发布 Release
-        uses: softprops/action-gh-release@v2
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: Pasbox ${{ github.ref_name }}
+          files: artifacts/**/*
           body: |
-            ## 🚀 Pasbox 自动编译发布
-            - 编译时间：${{ github.run_at }}
-            - 仓库地址：${{ env.REPO_NAME }}
-            - 编译平台：Linux/Windows/macOS
-            - 架构：x86_64/i386（macOS仅x86_64）
-            
-            ## 🚨 错误排查
-            如果运行失败，请检查：
-            1. 依赖库是否完整（脚本已自动切换备用地址）
-            2. 系统架构是否匹配（32/64位）
-            3. 查看Actions日志获取详细错误
-          files: |
-            ${{ github.workspace }}/release/**/*
+            Pasbox 自动编译版本 ${{ github.ref_name }}
+            - 支持平台: Linux, Windows, macOS
+            - 支持架构: x86_64, i386, arm64, arm32
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动生成的令牌
-
-      # 步骤3：发布失败通知（可选，可扩展为邮件/钉钉等）
-      - name: 发布失败告警
-        if: failure()
-        run: |
-          echo "❌ Release发布失败！"
-          echo "📋 失败信息："
-          echo "  仓库：${{ env.REPO_NAME }}"
-          echo "  标签：${{ github.ref_name }}"
-          echo "  运行ID：${{ github.run_id }}"
-          echo "🔍 排查建议：检查GITHUB_TOKEN权限，或产物是否存在"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
