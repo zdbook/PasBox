@@ -107,15 +107,15 @@ jobs:
           
           # 编译 Linux ARM 32位
           echo "--- 编译 Linux ARM 32位 ---"
-          lazbuild --cpu=arm --os=linux src/pascalcoin_daemon.lpi
-          lazbuild --cpu=arm --os=linux src/pascalcoin_wallet_classic.lpi
+          lazbuild --cpu=arm --os=linux --options="-Xr/usr/arm-linux-gnueabihf" src/pascalcoin_daemon.lpi
+          lazbuild --cpu=arm --os=linux --options="-Xr/usr/arm-linux-gnueabihf" src/pascalcoin_wallet_classic.lpi
           cp src/pascalcoin_daemon output/linux_arm/
           cp src/PascalCoinWalletLazarus output/linux_arm/
           
           # 编译 Linux ARM 64位
           echo "--- 编译 Linux ARM 64位 ---"
-          lazbuild --cpu=aarch64 --os=linux src/pascalcoin_daemon.lpi
-          lazbuild --cpu=aarch64 --os=linux src/pascalcoin_wallet_classic.lpi
+          lazbuild --cpu=aarch64 --os=linux --options="-Xr/usr/aarch64-linux-gnu" src/pascalcoin_daemon.lpi
+          lazbuild --cpu=aarch64 --os=linux --options="-Xr/usr/aarch64-linux-gnu" src/pascalcoin_wallet_classic.lpi
           cp src/pascalcoin_daemon output/linux_arm64/
           cp src/PascalCoinWalletLazarus output/linux_arm64/
       - name: 打包所有平台产物
