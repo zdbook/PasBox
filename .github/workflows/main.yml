@@ -129,39 +129,20 @@ jobs:
         with:
           name: pasbox-unified-build
           path: pasbox-all-platforms.zip
-      - name: 构建编译环境Docker镜像
+      - name: 打包当前已配置好的编译环境
         run: |
-          # 创建Dockerfile，打包整个编译环境（使用printf避免here-doc的缩进语法问题）
-          printf '%s\n' \
-          "FROM ubuntu:latest" \
-          "ENV DEBIAN_FRONTEND=noninteractive" \
-          "# 安装内核和启动工具，用于虚拟机镜像" \
-          "RUN apt-get update && apt-get install -y linux-image-generic grub2" \
-          "# 安装所有系统依赖" \
-          "RUN apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev mingw-w64 binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf libc6-dev-armhf-cross binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-multiarch" \
-          "# 创建交叉编译工具软链接" \
-          "RUN ln -sf /usr/bin/arm-linux-gnueabihf-ld /usr/bin/arm-linux-ld && ln -sf /usr/bin/arm-linux-gnueabihf-as /usr/bin/arm-linux-as && ln -sf /usr/bin/arm-linux-gnueabihf-ar /usr/bin/arm-linux-ar && ln -sf /usr/bin/arm-linux-gnueabihf-strip /usr/bin/arm-linux-strip" \
-          "RUN ln -sf /usr/bin/aarch64-linux-gnu-ld /usr/bin/aarch64-linux-ld && ln -sf /usr/bin/aarch64-linux-gnu-as /usr/bin/aarch64-linux-as && ln -sf /usr/bin/aarch64-linux-gnu-ar /usr/bin/aarch64-linux-ar && ln -sf /usr/bin/aarch64-linux-gnu-strip /usr/bin/aarch64-linux-strip" \
-          "# 安装Lazarus和FPC" \
-          "RUN apt-get install -y wget && wget https://github.com/gcarreno/setup-lazarus/releases/download/v3.2.17/lazarus_3.2.17_amd64.deb && dpkg -i lazarus_3.2.17_amd64.deb && rm lazarus_3.2.17_amd64.deb" \
-          "# 配置FPC交叉编译器" \
-          "RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=x86_64 OS_TARGET=win64 INSTALL_PREFIX=/usr && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossx64 /usr/bin/ppcrossx64" \
-          "RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=i386 OS_TARGET=win32 INSTALL_PREFIX=/usr && ln -sf /usr/lib/fpc/\$FPC_VER/ppcross386 /usr/bin/ppcross386" \
-          "RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=arm OS_TARGET=linux INSTALL_PREFIX=/usr BINUTILSPREFIX=arm-linux-gnueabihf- && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossarm /usr/bin/ppcrossarm" \
-          "RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=aarch64 OS_TARGET=linux INSTALL_PREFIX=/usr BINUTILSPREFIX=aarch64-linux-gnu- && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossa64 /usr/bin/ppcrossa64" \
-          "# 配置环境变量" \
-          "ENV FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true" \
-          "ENV PPC_CONFIG_PATH=/workspace/deps" \
-          "WORKDIR /workspace" \
-          > Dockerfile
+          # 直接将当前Runner的完整环境打包为rootfs，无需重新安装任何依赖
+          # 排除不需要的临时文件和系统文件
+          sudo tar --exclude=/proc --exclude=/tmp --exclude=/sys --exclude=/dev --exclude=/run -czf rootfs.tar.gz -C / .
           
           # 配置Docker禁用IPv6，解决GitHub Actions的IPv6网络不可达问题
           echo '{ "ipv6": false }' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
           sleep 5
           
-          # 构建Docker镜像
-          docker build --network=host -t pasbox-build-env:latest .
+          # 将当前的rootfs直接导入为Docker镜像，和当前环境完全一致
+          docker import rootfs.tar.gz pasbox-build-env:latest
+          
           # 打包Docker镜像为tar.gz文件，方便下载
           docker save pasbox-build-env:latest | gzip > pasbox-build-env.tar.gz
           
