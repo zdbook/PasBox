@@ -1,66 +1,61 @@
-name: 全自动交叉编译并发布 Pasbox
+name: Pasbox 单一系统全自动交叉编译发布
 
-# 触发条件：打标签时触发 / PR 时仅编译不发布 / 手动触发
 on:
   push:
     tags:
-      - 'v*' # 标签以v开头时触发（如v1.0.0）
+      - 'v*'
   pull_request:
     branches: [ master, main ]
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
-# 全局环境变量（自动匹配仓库路径，无需手动修改）
 env:
   REPO_NAME: ${{ github.repository }}
-  REPO_OWNER: ${{ github.repository_owner }}
   WORKSPACE: ${{ github.workspace }}
-  # 依赖库主地址 + 备用地址（优先级降级）
   DEPENDENCY_MAIN: "https://github.com/zdbook/Pasbox-Deps.git"
   DEPENDENCY_BACKUP1: "https://gitee.com/zdbook/Pasbox-Deps.git"
   DEPENDENCY_BACKUP2: "https://gitlab.com/zdbook/Pasbox-Deps.git"
 
 jobs:
-  # 构建矩阵：多平台交叉编译
   build:
-    name: ${{ matrix.os }}-${{ matrix.arch }} 编译
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false # 一个平台失败不影响其他平台
-      matrix:
-        # 支持的编译平台和架构
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        arch: [x86_64, i386]
-        exclude:
-          - os: macos-latest
-            arch: i386 # macOS 不再支持32位
-        include:
-          - os: ubuntu-latest
-            arch: arm64
-          - os: ubuntu-latest
-            arch: arm32
-
+    name: 统一交叉编译 (Ubuntu )
+    runs-on: ubuntu-latest
+    
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: 安装 Free Pascal (FPC ) 和 Lazarus
+      - name: 安装 Lazarus 和 FPC
         uses: gcarreno/setup-lazarus@v3.2.17
         with:
           lazarus-version: stable
-          # 移除了 fpc-version，因为它不是一个有效的输入，并导致警告和缓存问题
+          with-cache: true
 
-      - name: 安装系统依赖 (Linux)
-        if: runner.os == 'Linux'
+      - name: 安装交叉编译工具链和系统依赖
         run: |
-          echo "正在更新 apt 缓存并安装系统依赖..."
-          sudo apt-get update -y || { echo "apt update 失败"; exit 1; }
-          sudo apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev || { echo "安装 Linux 系统依赖失败"; exit 1; }
-          echo "Linux 系统依赖安装完成。"
+          sudo apt-get update
+          # 安装 Linux 编译依赖
+          sudo apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev
+          # 安装 Windows 交叉编译工具 (MinGW)
+          sudo apt-get install -y mingw-w64
+          # 安装 binutils 以支持多架构处理
+          sudo apt-get install -y binutils-multiarch
 
-      - name: 自动获取依赖库 (带容错机制) - Linux/macOS
-        if: runner.os != 'Windows'
+      - name: 配置 FPC 交叉编译器 (Linux to Windows)
+        run: |
+          # 编译并安装 Windows 64位交叉编译器单元
+          # 注意：/usr/share/fpcsrc 是 setup-lazarus 默认的源码路径
+          FPC_VER=$(fpc -iV)
+          cd /usr/share/fpcsrc/$FPC_VER
+          sudo make crossinstall CPU_TARGET=x86_64 OS_TARGET=win64 INSTALL_PREFIX=/usr
+          sudo ln -sf /usr/lib/fpc/$FPC_VER/ppcrossx64 /usr/bin/ppcrossx64
+          
+          # 编译并安装 Windows 32位交叉编译器单元
+          sudo make crossinstall CPU_TARGET=i386 OS_TARGET=win32 INSTALL_PREFIX=/usr
+          sudo ln -sf /usr/lib/fpc/$FPC_VER/ppcross386 /usr/bin/ppcross386
+
+      - name: 自动获取依赖库 (带容错机制)
         run: |
           echo "正在尝试从主地址获取依赖..."
           if git clone $DEPENDENCY_MAIN deps; then
@@ -72,104 +67,59 @@ jobs:
           else
             echo "所有地址均失败，请检查网络或仓库地址！" && exit 1
           fi
-          # 将依赖库路径添加到 FPC 搜索路径
           echo "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" >> $GITHUB_ENV
-          echo "依赖库获取完成。"
 
-      - name: 自动获取依赖库 (带容错机制) - Windows
-        if: runner.os == 'Windows'
-        shell: pwsh # 指定使用 PowerShell
+      - name: 执行多平台交叉编译
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "正在尝试从主地址获取依赖..."
-          try {
-              git clone $env:DEPENDENCY_MAIN deps
-              Write-Host "成功从主地址获取依赖。"
-          } catch {
-              Write-Host "主地址失败，尝试备用地址1..."
-              try {
-                  git clone $env:DEPENDENCY_BACKUP1 deps
-                  Write-Host "成功从备用地址1获取依赖。"
-              } catch {
-                  Write-Host "备用地址1失败，尝试备用地址2..."
-                  try {
-                      git clone $env:DEPENDENCY_BACKUP2 deps
-                      Write-Host "成功从备用地址2获取依赖。"
-                  } catch {
-                      Write-Host "所有地址均失败，请检查网络或仓库地址！"
-                      exit 1
-                  }
-              }
-          }
-          # 将依赖库路径添加到 FPC 搜索路径
-          "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "依赖库获取完成。"
+          mkdir -p output/linux_x64 output/win_x64 output/win_x86
+          
+          echo "--- 编译 Linux x86_64 ---"
+          lazbuild --cpu=x86_64 --os=linux src/pascalcoin_daemon.lpi
+          lazbuild --cpu=x86_64 --os=linux src/pascalcoin_wallet_classic.lpi
+          cp src/pascalcoin_daemon output/linux_x64/
+          cp src/pascalcoin_wallet_classic output/linux_x64/
 
-      - name: 编译 Pasbox 守护进程 (根据平台和架构)
+          echo "--- 编译 Windows x86_64 ---"
+          lazbuild --cpu=x86_64 --os=win64 src/pascalcoin_daemon.lpi
+          lazbuild --cpu=x86_64 --os=win64 src/pascalcoin_wallet_classic.lpi
+          cp src/pascalcoin_daemon.exe output/win_x64/
+          cp src/pascalcoin_wallet_classic.exe output/win_x64/
+
+          echo "--- 编译 Windows i386 ---"
+          lazbuild --cpu=i386 --os=win32 src/pascalcoin_daemon.lpi
+          lazbuild --cpu=i386 --os=win32 src/pascalcoin_wallet_classic.lpi
+          cp src/pascalcoin_daemon.exe output/win_x86/
+          cp src/pascalcoin_wallet_classic.exe output/win_x86/
+
+      - name: 打包所有平台产物
         run: |
-          echo "正在编译 Pasbox 守护进程..."
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_daemon.lpi || { echo "Windows 守护进程编译失败"; exit 1; }
-          else
-            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_daemon.lpi || { echo "非 Windows 守护进程编译失败"; exit 1; }
-          fi
-          echo "Pasbox 守护进程编译完成。"
-
-      - name: 编译 Pasbox 经典钱包 (根据平台和架构)
-        run: |
-          echo "正在编译 Pasbox 经典钱包..."
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_wallet_classic.lpi || { echo "Windows 经典钱包编译失败"; exit 1; }
-          else
-            lazbuild --cpu=${{ matrix.arch }} src/pascalcoin_wallet_classic.lpi || { echo "非 Windows 经典钱包编译失败"; exit 1; }
-          fi
-          echo "Pasbox 经典钱包编译完成。"
-
-      - name: 打包二进制文件
-        run: |
-          echo "正在打包二进制文件..."
-          mkdir -p release
-          # 复制编译产物到 release 目录
-          # 注意：实际的二进制文件名可能因平台和FPC版本而异，这里使用通配符
-          find src -maxdepth 1 -type f -name "pascalcoin_daemon*" -exec cp {} release/ \; || { echo "复制守护进程失败"; exit 1; }
-          find src -maxdepth 1 -type f -name "pascalcoin_wallet_classic*" -exec cp {} release/ \; || { echo "复制经典钱包失败"; exit 1; }
-
-          cd release
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            zip -r ../pasbox-${{ matrix.os }}-${{ matrix.arch }}.zip . || { echo "Windows 打包失败"; exit 1; }
-          else
-            tar -czvf ../pasbox-${{ matrix.os }}-${{ matrix.arch }}.tar.gz . || { echo "非 Windows 打包失败"; exit 1; }
-          fi
-          echo "二进制文件打包完成。"
+          cd output
+          zip -r ../pasbox-all-platforms.zip .
+          cd ..
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: pasbox-${{ matrix.os }}-${{ matrix.arch }}
-          path: pasbox-${{ matrix.os }}-${{ matrix.arch }}.*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: pasbox-unified-build
+          path: pasbox-all-platforms.zip
 
-  # 发布作业：仅在打标签时运行
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: 下载所有产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: pasbox-unified-build
 
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*
+          files: pasbox-all-platforms.zip
           body: |
-            Pasbox 自动编译版本 ${{ github.ref_name }}
-            - 支持平台: Linux, Windows, macOS
-            - 支持架构: x86_64, i386, arm64, arm32
-          draft: false
-          prerelease: false
+            Pasbox 统一交叉编译版本 ${{ github.ref_name }}
+            构建环境: Ubuntu Latest
+            包含平台: Linux x64, Windows x64, Windows x86
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
