@@ -58,20 +58,9 @@ jobs:
           # Linux ARM 64位交叉编译器
           sudo make crossinstall CPU_TARGET=aarch64 OS_TARGET=linux INSTALL_PREFIX=/usr BINUTILSPREFIX=aarch64-linux-gnu-
           sudo ln -sf /usr/lib/fpc/$FPC_VER/ppcrossa64 /usr/bin/ppcrossa64
-      - name: 自动获取依赖库 (带容错机制)
+      - name: 配置依赖路径
         run: |
-          echo "正在尝试从主地址获取依赖..."
-          # 改用下载Zip包的方式，彻底绕开git的凭证配置问题
-          # 自动移除地址末尾的.git后缀，避免拼接Zip地址时出错
-          # 为GitHub私有仓库下载添加Token，确保有权限访问
-          if wget -O deps.zip --header="Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://github.com/zdbook/Pasbox-Deps/archive/refs/heads/master.zip; then
-            echo "成功从主地址获取依赖。"
-            unzip -q deps.zip
-            mv Pasbox-Deps-master deps
-          else
-            echo "无法从GitHub获取依赖，请检查仓库地址或网络！" && exit 1
-          fi
-          rm -f deps.zip
+          # 依赖已经包含在主仓库中，直接配置路径即可
           echo "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" >> $GITHUB_ENV
       - name: 执行多平台交叉编译
         run: |
