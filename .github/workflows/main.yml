@@ -9,6 +9,7 @@ on:
 env:
   REPO_NAME: ${{ github.repository }}
   WORKSPACE: ${{ github.workspace }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   build:
     name: 统一交叉编译 (Ubuntu )
@@ -128,24 +129,63 @@ jobs:
         with:
           name: pasbox-unified-build
           path: pasbox-all-platforms.zip
+      - name: 构建编译环境Docker镜像
+        run: |
+          # 创建Dockerfile，打包整个编译环境
+          cat > Dockerfile <<EOF
+FROM ubuntu:latest
+ENV DEBIAN_FRONTEND=noninteractive
+# 安装所有系统依赖
+RUN apt-get update && apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev mingw-w64 binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf libc6-dev-armhf-cross binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-multiarch
+# 创建交叉编译工具软链接
+RUN ln -sf /usr/bin/arm-linux-gnueabihf-ld /usr/bin/arm-linux-ld && ln -sf /usr/bin/arm-linux-gnueabihf-as /usr/bin/arm-linux-as && ln -sf /usr/bin/arm-linux-gnueabihf-ar /usr/bin/arm-linux-ar && ln -sf /usr/bin/arm-linux-gnueabihf-strip /usr/bin/arm-linux-strip
+RUN ln -sf /usr/bin/aarch64-linux-gnu-ld /usr/bin/aarch64-linux-ld && ln -sf /usr/bin/aarch64-linux-gnu-as /usr/bin/aarch64-linux-as && ln -sf /usr/bin/aarch64-linux-gnu-ar /usr/bin/aarch64-linux-ar && ln -sf /usr/bin/aarch64-linux-gnu-strip /usr/bin/aarch64-linux-strip
+# 安装Lazarus和FPC
+RUN apt-get install -y wget && wget https://github.com/gcarreno/setup-lazarus/releases/download/v3.2.17/lazarus_3.2.17_amd64.deb && dpkg -i lazarus_3.2.17_amd64.deb && rm lazarus_3.2.17_amd64.deb
+# 配置FPC交叉编译器
+RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=x86_64 OS_TARGET=win64 INSTALL_PREFIX=/usr && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossx64 /usr/bin/ppcrossx64
+RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=i386 OS_TARGET=win32 INSTALL_PREFIX=/usr && ln -sf /usr/lib/fpc/\$FPC_VER/ppcross386 /usr/bin/ppcross386
+RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=arm OS_TARGET=linux INSTALL_PREFIX=/usr BINUTILSPREFIX=arm-linux-gnueabihf- && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossarm /usr/bin/ppcrossarm
+RUN FPC_VER=\$(fpc -iV) && cd /usr/share/fpcsrc/\$FPC_VER && make crossinstall CPU_TARGET=aarch64 OS_TARGET=linux INSTALL_PREFIX=/usr BINUTILSPREFIX=aarch64-linux-gnu- && ln -sf /usr/lib/fpc/\$FPC_VER/ppcrossa64 /usr/bin/ppcrossa64
+# 配置环境变量
+ENV FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
+ENV PPC_CONFIG_PATH=/workspace/deps
+WORKDIR /workspace
+EOF
+          # 构建Docker镜像
+          docker build -t pasbox-build-env:latest .
+          # 打包Docker镜像为tar.gz文件，方便下载
+          docker save pasbox-build-env:latest | gzip > pasbox-build-env.tar.gz
+      - name: 上传环境镜像
+        uses: actions/upload-artifact@v4
+        with:
+          name: pasbox-build-env
+          path: pasbox-build-env.tar.gz
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: 下载产物
+      - name: 下载编译产物
         uses: actions/download-artifact@v4
         with:
           name: pasbox-unified-build
+      - name: 下载环境镜像
+        uses: actions/download-artifact@v4
+        with:
+          name: pasbox-build-env
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: pasbox-all-platforms.zip
+          files: |
+            pasbox-all-platforms.zip
+            pasbox-build-env.tar.gz
           body: |
             Pasbox 统一交叉编译版本 ${{ github.ref_name }}
             构建环境: Ubuntu Latest (单一系统交叉编译)
             包含平台: Linux x64, Linux ARM 32位, Linux ARM 64位, Windows x64, Windows x86
             
             本版本由GitHub Actions全自动编译发布，无需人工干预。
+            同时提供预配置的编译环境Docker镜像，可直接下载导入本地使用。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
