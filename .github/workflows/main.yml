@@ -65,15 +65,16 @@ jobs:
         run: |
           echo "正在尝试从主地址获取依赖..."
           # 改用下载Zip包的方式，彻底绕开git的凭证配置问题
-          if wget -O deps.zip $DEPENDENCY_MAIN/archive/refs/heads/master.zip; then
+          # 自动移除地址末尾的.git后缀，避免拼接Zip地址时出错
+          if wget -O deps.zip ${DEPENDENCY_MAIN%.git}/archive/refs/heads/master.zip; then
             echo "成功从主地址获取依赖。"
             unzip -q deps.zip
             mv Pasbox-Deps-master deps
-          elif wget -O deps.zip $DEPENDENCY_BACKUP1/archive/master.zip; then
+          elif wget -O deps.zip ${DEPENDENCY_BACKUP1%.git}/archive/master.zip; then
             echo "主地址失败，成功从备用地址1获取依赖。"
             unzip -q deps.zip
             mv Pasbox-Deps-master deps
-          elif wget -O deps.zip $DEPENDENCY_BACKUP2/-/archive/master/Pasbox-Deps-master.zip; then
+          elif wget -O deps.zip ${DEPENDENCY_BACKUP2%.git}/-/archive/master/Pasbox-Deps-master.zip; then
             echo "备用地址1失败，成功从备用地址2获取依赖。"
             unzip -q deps.zip
             mv Pasbox-Deps-master deps
