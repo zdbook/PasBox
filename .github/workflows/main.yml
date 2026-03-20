@@ -135,8 +135,10 @@ jobs:
           cat > Dockerfile <<EOF
 FROM ubuntu:latest
 ENV DEBIAN_FRONTEND=noninteractive
+# 安装内核和启动工具，用于虚拟机镜像
+RUN apt-get update && apt-get install -y linux-image-generic grub2
 # 安装所有系统依赖
-RUN apt-get update && apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev mingw-w64 binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf libc6-dev-armhf-cross binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-multiarch
+RUN apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev mingw-w64 binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf libc6-dev-armhf-cross binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-multiarch
 # 创建交叉编译工具软链接
 RUN ln -sf /usr/bin/arm-linux-gnueabihf-ld /usr/bin/arm-linux-ld && ln -sf /usr/bin/arm-linux-gnueabihf-as /usr/bin/arm-linux-as && ln -sf /usr/bin/arm-linux-gnueabihf-ar /usr/bin/arm-linux-ar && ln -sf /usr/bin/arm-linux-gnueabihf-strip /usr/bin/arm-linux-strip
 RUN ln -sf /usr/bin/aarch64-linux-gnu-ld /usr/bin/aarch64-linux-ld && ln -sf /usr/bin/aarch64-linux-gnu-as /usr/bin/aarch64-linux-as && ln -sf /usr/bin/aarch64-linux-gnu-ar /usr/bin/aarch64-linux-ar && ln -sf /usr/bin/aarch64-linux-gnu-strip /usr/bin/aarch64-linux-strip
@@ -156,11 +158,30 @@ EOF
           docker build -t pasbox-build-env:latest .
           # 打包Docker镜像为tar.gz文件，方便下载
           docker save pasbox-build-env:latest | gzip > pasbox-build-env.tar.gz
-      - name: 上传环境镜像
+          
+          # 安装docker2vm工具，将Docker镜像转换为虚拟机格式
+          wget https://github.com/medya/d2v/releases/latest/download/d2v-linux-amd64 -O d2v
+          chmod +x d2v
+          
+          # 生成VirtualBox格式镜像 (.vdi)
+          ./d2v --input pasbox-build-env:latest --output pasbox-build-env.vdi --format virtualbox
+          # 生成VMware格式镜像 (.vmdk)
+          ./d2v --input pasbox-build-env:latest --output pasbox-build-env.vmdk --format vmware
+          # 生成通用OVA格式镜像 (支持所有主流虚拟机软件)
+          ./d2v --input pasbox-build-env:latest --output pasbox-build-env.ova --format ova
+          
+          # 压缩虚拟机镜像，减小下载体积
+          gzip pasbox-build-env.vdi
+          gzip pasbox-build-env.vmdk
+      - name: 上传所有环境镜像
         uses: actions/upload-artifact@v4
         with:
           name: pasbox-build-env
-          path: pasbox-build-env.tar.gz
+          path: |
+            pasbox-build-env.tar.gz
+            pasbox-build-env.vdi.gz
+            pasbox-build-env.vmdk.gz
+            pasbox-build-env.ova
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
@@ -180,12 +201,19 @@ EOF
           files: |
             pasbox-all-platforms.zip
             pasbox-build-env.tar.gz
+            pasbox-build-env.vdi.gz
+            pasbox-build-env.vmdk.gz
+            pasbox-build-env.ova
           body: |
             Pasbox 统一交叉编译版本 ${{ github.ref_name }}
             构建环境: Ubuntu Latest (单一系统交叉编译)
             包含平台: Linux x64, Linux ARM 32位, Linux ARM 64位, Windows x64, Windows x86
             
             本版本由GitHub Actions全自动编译发布，无需人工干预。
-            同时提供预配置的编译环境Docker镜像，可直接下载导入本地使用。
+            同时提供预配置的编译环境，支持多种格式：
+            - `pasbox-build-env.tar.gz`: Docker容器镜像，轻量快速，支持全平台
+            - `pasbox-build-env.vdi.gz`: VirtualBox虚拟机磁盘镜像
+            - `pasbox-build-env.vmdk.gz`: VMware虚拟机磁盘镜像
+            - `pasbox-build-env.ova`: 通用OVA虚拟机镜像，支持所有主流虚拟机软件
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
