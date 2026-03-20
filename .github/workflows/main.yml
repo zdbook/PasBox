@@ -49,7 +49,7 @@ jobs:
         uses: gcarreno/setup-lazarus@v3.2.17
         with:
           lazarus-version: stable
-          fpc-version: stable
+          # 移除了 fpc-version，因为它不是一个有效的输入，并导致警告和缓存问题
 
       - name: 安装系统依赖 (Linux)
         if: runner.os == 'Linux'
@@ -59,7 +59,8 @@ jobs:
           sudo apt-get install -y libgtk2.0-dev libssl-dev libcurl4-openssl-dev || { echo "安装 Linux 系统依赖失败"; exit 1; }
           echo "Linux 系统依赖安装完成。"
 
-      - name: 自动获取依赖库 (带容错机制)
+      - name: 自动获取依赖库 (带容错机制) - Linux/macOS
+        if: runner.os != 'Windows'
         run: |
           echo "正在尝试从主地址获取依赖..."
           if git clone $DEPENDENCY_MAIN deps; then
@@ -74,6 +75,35 @@ jobs:
           # 将依赖库路径添加到 FPC 搜索路径
           echo "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" >> $GITHUB_ENV
           echo "依赖库获取完成。"
+
+      - name: 自动获取依赖库 (带容错机制) - Windows
+        if: runner.os == 'Windows'
+        shell: pwsh # 指定使用 PowerShell
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "正在尝试从主地址获取依赖..."
+          try {
+              git clone $env:DEPENDENCY_MAIN deps
+              Write-Host "成功从主地址获取依赖。"
+          } catch {
+              Write-Host "主地址失败，尝试备用地址1..."
+              try {
+                  git clone $env:DEPENDENCY_BACKUP1 deps
+                  Write-Host "成功从备用地址1获取依赖。"
+              } catch {
+                  Write-Host "备用地址1失败，尝试备用地址2..."
+                  try {
+                      git clone $env:DEPENDENCY_BACKUP2 deps
+                      Write-Host "成功从备用地址2获取依赖。"
+                  } catch {
+                      Write-Host "所有地址均失败，请检查网络或仓库地址！"
+                      exit 1
+                  }
+              }
+          }
+          # 将依赖库路径添加到 FPC 搜索路径
+          "PPC_CONFIG_PATH=$GITHUB_WORKSPACE/deps" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "依赖库获取完成。"
 
       - name: 编译 Pasbox 守护进程 (根据平台和架构)
         run: |
